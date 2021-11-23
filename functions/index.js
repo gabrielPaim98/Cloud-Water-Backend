@@ -5,18 +5,7 @@ admin.initializeApp();
 // Take the log passed to this HTTP endpoint and insert it into
 // Firestore under the path /main_iot/:documentId/logs and /main_iot/:documentId/last_soil_read
 exports.addLog = functions.https.onRequest(async (req, res) => {
-    // Grab the text parameter.
-    //const original = req.query.text;
-    
-    // Push the new message into Firestore using the Firebase Admin SDK.
-    //const writeResult = await admin.firestore().collection('main_iot').add({original: original});
-    
-    // Send back a message that we've successfully written the message
-    //res.json({result: `Message with ID: ${writeResult.id} added.`});
-
-
-
-    //TODO: req.body -> 
+    // req.body -> 
     // {
     //  main_iot_serial: "7bd4",
     //  log: [
@@ -26,52 +15,37 @@ exports.addLog = functions.https.onRequest(async (req, res) => {
     //      }
     //  ]
     // }
-    console.log('body: ', req.body);
+
+    // Gets the information from request
     const main_iot_serial = req.body.main_iot_serial;
     const newLogs = req.body.log;
-    console.log('mainIotSerial: ', main_iot_serial);
-    console.log('newLogs: ', newLogs);
 
-    //TODO: achar doc pelo main_iot_serial informado
+    // Gets the main_iot with given serial
     const main_iotQ = (await admin.firestore().collection('main_iot').where('serial', '==', main_iot_serial).limit(1).get()).docs[0];
     const main_iot = main_iotQ.data();
     const mainIotId = main_iotQ.id;
-    console.log('mainIot: ', main_iot);
 
-    //TODO: montar lista de aux_iot com base nos seriais informados (buscar nome do aux_iot com base no serial)
+    // creates the new log info and soil read
     var lastSoilUpdate = {};
     var logTxt = '';
     newLogs.forEach(e => {
-        console.log('for log: ', e);
         const serial = e.aux_iot_serial;
-        console.log('for auxIotSerial: ', serial);
         const value = e.read_value;
         var aux_iot;
-        for (var key in main_iot.aux_iot){
+        for (var key in main_iot.aux_iot) {
             var obj = main_iot.aux_iot[key];
             if (obj.serial == serial) {
                 aux_iot = obj;
             }
         }
-        console.log('for auxIot: ', aux_iot);
         lastSoilUpdate[serial] = {
             value: value,
             status: getReadStatus(value)
         };
         logTxt += `${aux_iot.name} - ${value}\n`;
     });
-    console.log('lastSoilUpdate: ', lastSoilUpdate);
-    console.log('logTxt: ', logTxt);
-    //console.log('timestamp: ', admin.firestore.FieldValue.serverTimestamp());
-    console.log('timestamp: ', admin.firestore.Timestamp.now());
 
-
-    //TODO: adicionar entrada em logs -> 
-    // {
-    //  msg: Umidade Jardim Frontal - 0,020\nUmidade Jardim Exterior - 0,020\nUmidade Jardim Interno - 0,020,
-    //  timestamp: timestamp.now()
-    // }
-
+    // Writes the new info to firestore
     const logResult = await admin.firestore().collection('main_iot').doc(mainIotId).update({
         logs: admin.firestore.FieldValue.arrayUnion(
             {
@@ -81,42 +55,110 @@ exports.addLog = functions.https.onRequest(async (req, res) => {
         ),
         last_soil_read: lastSoilUpdate
     });
-    console.log('logResult: ', logResult);
     res.status(200).send('log added');
-
-    //TODO: modificar last_soil_read ->
-    // {
-    //  "aux_iot_name": {
-    //      "status": (low/medium/high de acordo com value),
-    //      "value": (value recebido),
-    //  }
-    // }
-
-    //const soilResult = main_iot_serial.update({last_soil_read: lastSoilUpdate});
-    //console.log('soilResult: ', soilResult);
-  });
-
-
-// Listen for changes mades to /users/:documentId/settings and pushes the changes to the iot
-exports.settingsChange = functions.firestore.document('/users/{documentId}')
-.onUpdate((snap, context) => {
-  // Grab the current value of what was written to Firestore.
-  //const original = snap.data().original;
-
-  // Access the parameter `{documentId}` with `context.params`
-  //functions.logger.log('Uppercasing', context.params.documentId, original);
-
-  //const uppercase = original.toUpperCase();
-
-  // You must return a Promise when performing asynchronous tasks inside a Functions such as
-  // writing to Firestore.
-  // Setting an 'uppercase' field in Firestore document returns a Promise.
-  //return snap.ref.set({uppercase}, {merge: true});
-
-
-  //TODO: pegar novo valor do faucet e enviar para o iot
 });
 
+
+// Listen for changes mades to /users/:documentId and pushes the changes to the iot
+exports.onUserChange = functions.firestore.document('users/{documentId}')
+    .onUpdate((change, context) => {
+        const newStatus = change.after.data();
+        const oldStatus = change.before.data();
+        const userId = context.params.documentId;
+
+        // If the change is on faucet status, pushes the new value to the user main iot
+        if (newStatus.settings.faucet_on != oldStatus.settings.faucet_on) {
+            const newFaucetStatus = newStatus.settings.faucet_on;
+            changeIotFaucetStatusForUser(userId, newFaucetStatus);
+            return null;
+        }
+
+        // If the change is on a config 
+        if (newStatus.settings.config != oldStatus.settings.config) {
+            const newConfig = newStatus.settings.config;
+            //TODO: realizar query on config
+            //TODO: pegar id da config modificada
+            //TODO: identificar config modificada
+            //TODO: enviar modificação para iot
+            return null;
+        }
+
+        return null;
+    });
+
+exports.onMainIotChange = functions.firestore.document('main_iot/{documentId}')
+    .onUpdate((change, context) => {
+        const newStatus = change.after.data();
+        const oldStatus = change.before.data();
+        const serial = newStatus.serial;
+        const userId = newStatus.user_id;
+
+        // We only want to get changes made to last soil read
+        if (newStatus.last_soil_read == oldStatus.last_soil_read) {
+            return null;
+        }
+
+        // checks if any value is 'low', if so activates the users faucet
+        // else turns off the faucet
+        const newSoilRead = newStatus.last_soil_read;
+
+        //Checks if any status is low
+        var isAnyStatusLow = false;
+        for (var key in newSoilRead) {
+            var obj = newSoilRead[key];
+            if (obj.status == 'low') {
+                isAnyStatusLow = true;
+                break;
+            }
+        }
+        if (!isAnyStatusLow) {
+            return null;
+        }
+
+        //checks if user has the config to turn on faucet on a low value
+        admin.firestore().collection('users').doc(userId).get().then(u => {
+            // End if no user was found
+            if (u == null || u.data() == null) {
+                return;
+            }
+
+            const user = u.data();
+            if (!user.settings.config['1']) {
+                return null;
+            }
+
+            // Checks if user has the config to not turn on faucet on rainy days
+            if (user.settings.config['3']) {
+                // Checks if it will rain on the current day
+                const willRain = getRainCondition(user.lat, user.lng);
+                if (willRain) {
+                    return null;
+                }
+            }
+
+            changeIotFaucetStatusForSerial(serial, true);
+            return null;
+        });
+
+        return null;
+    });
+
+function changeIotFaucetStatusForUser(userId, value) {
+    console.log('changeIotFaucetStatus: ', value, ' for user: ', userId);
+    //TODO: Buscar serial do main_iot usando userId
+    var serial = '';
+    changeIotFaucetStatusForSerial(serial, value);
+}
+
+function changeIotFaucetStatusForSerial(serial, value) {
+    //TODO: conectar ao iot
+    //TODO: modificar valor da torneira
+}
+
+function getRainCondition(lat, lnt) {
+    //TODO: Get rain condition for current day, given lat lng
+    return true;
+}
 
 function getReadStatus(value) {
     if (value < 0.01) {
