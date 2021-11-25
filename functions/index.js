@@ -1,5 +1,6 @@
 const functions = require("firebase-functions");
 const admin = require('firebase-admin');
+const net = require('net');
 admin.initializeApp();
 
 // Take the log passed to this HTTP endpoint and insert it into
@@ -58,6 +59,30 @@ exports.addLog = functions.https.onRequest(async (req, res) => {
     res.status(200).send('log added');
 });
 
+exports.updateIotLink = functions.https.onRequest(async (req, res) => {
+    // req.body -> 
+    // {
+    //  main_iot_serial: "7bd4",
+    //  link: "http://127.0.0.1:8080"
+    // }
+
+
+    // Gets request information
+    const main_iot_serial = req.body.main_iot_serial;
+    const iotLink = req.body.link;
+
+    // Gets the main iot with given serial
+    const main_iotQ = (await admin.firestore().collection('main_iot').where('serial', '==', main_iot_serial).limit(1).get()).docs[0];
+    const main_iot = main_iotQ.data();
+    const mainIotId = main_iotQ.id;
+
+    // Writes the new info to firestore
+    const result = await admin.firestore().collection('main_iot').doc(mainIotId).update({
+        iot_link: iotLink
+    });
+    res.status(200).send('log added');
+});
+
 
 // Listen for changes mades to /users/:documentId and pushes the changes to the iot
 exports.onUserChange = functions.firestore.document('users/{documentId}')
@@ -92,6 +117,7 @@ exports.onMainIotChange = functions.firestore.document('main_iot/{documentId}')
         const oldStatus = change.before.data();
         const serial = newStatus.serial;
         const userId = newStatus.user_id;
+        const link = newStatus.iot_link;
 
         // We only want to get changes made to last soil read
         if (newStatus.last_soil_read == oldStatus.last_soil_read) {
@@ -136,23 +162,47 @@ exports.onMainIotChange = functions.firestore.document('main_iot/{documentId}')
                 }
             }
 
-            changeIotFaucetStatusForSerial(serial, true);
+            changeIotFaucetStatusForLink(link, true);
             return null;
         });
 
         return null;
     });
 
-function changeIotFaucetStatusForUser(userId, value) {
-    console.log('changeIotFaucetStatus: ', value, ' for user: ', userId);
-    //TODO: Buscar serial do main_iot usando userId
-    var serial = '';
-    changeIotFaucetStatusForSerial(serial, value);
+async function changeIotFaucetStatusForUser(userId, value) {
+    const main_iotQ = (await admin.firestore().collection('main_iot').where('user_id', '==', userId).limit(1).get()).docs[0];
+    const main_iot = main_iotQ.data();
+    const link = main_iot.iot_link;
+    changeIotFaucetStatusForLink(link, value);
 }
 
-function changeIotFaucetStatusForSerial(serial, value) {
-    //TODO: conectar ao iot
-    //TODO: modificar valor da torneira
+function changeIotFaucetStatusForLink(link, value) {
+    const ip = link.split(":")[0];
+    const port = link.split(":")[1];
+
+    var client = new net.Socket();
+    client.connect(port, ip, async function () {
+        var msg = 'FAUCET_STATUS OFF';
+        if (value) {
+            msg = 'FAUCET_STATUS ON';
+        }
+        await sleep(1000);
+        client.write(msg);
+        client.end();
+    });
+
+    client.on('data', function (data) {
+        console.log('Received: ' + data);
+        //client.destroy(); // kill client after server's response
+    });
+
+    client.on('close', function () {
+        console.log('Connection closed');
+    });
+
+    client.on('error', function(err) {
+        console.log(err)
+     })
 }
 
 function getRainCondition(lat, lnt) {
@@ -171,3 +221,9 @@ function getReadStatus(value) {
 
     return 'high';
 }
+
+function sleep(ms) {
+    return new Promise((resolve) => {
+      setTimeout(resolve, ms);
+    });
+  }
