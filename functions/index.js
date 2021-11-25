@@ -1,6 +1,7 @@
 const functions = require("firebase-functions");
 const admin = require('firebase-admin');
 const net = require('net');
+const axios = require('axios');
 admin.initializeApp();
 
 // Take the log passed to this HTTP endpoint and insert it into
@@ -83,6 +84,26 @@ exports.updateIotLink = functions.https.onRequest(async (req, res) => {
     res.status(200).send('log added');
 });
 
+exports.forecast = functions.https.onRequest(async (req, res) => {
+    // req.body -> 
+    // {
+    //  "lat": -12.8997,
+    //  "lng": -38.3357,
+    // }
+
+
+    // Gets request information
+    const main_iot_serial = req.body.main_iot_serial;
+    const iotLink = req.body.link;
+
+    const response = await getRainCondition(req.body.lat, req.body.lng);
+    if (response == null) {
+        res.status(500).send('Error getting forecast');
+    }
+
+    res.status(200).send(response);
+});
+
 
 // Listen for changes mades to /users/:documentId and pushes the changes to the iot
 exports.onUserChange = functions.firestore.document('users/{documentId}')
@@ -95,16 +116,6 @@ exports.onUserChange = functions.firestore.document('users/{documentId}')
         if (newStatus.settings.faucet_on != oldStatus.settings.faucet_on) {
             const newFaucetStatus = newStatus.settings.faucet_on;
             changeIotFaucetStatusForUser(userId, newFaucetStatus);
-            return null;
-        }
-
-        // If the change is on a config 
-        if (newStatus.settings.config != oldStatus.settings.config) {
-            const newConfig = newStatus.settings.config;
-            //TODO: realizar query on config
-            //TODO: pegar id da config modificada
-            //TODO: identificar config modificada
-            //TODO: enviar modificação para iot
             return null;
         }
 
@@ -156,10 +167,12 @@ exports.onMainIotChange = functions.firestore.document('main_iot/{documentId}')
             // Checks if user has the config to not turn on faucet on rainy days
             if (user.settings.config['3']) {
                 // Checks if it will rain on the current day
-                const willRain = getRainCondition(user.lat, user.lng);
-                if (willRain) {
-                    return null;
-                }
+                willRainIn(user.lat, user.lng).then(willRain => {
+                    if (willRain) {
+                        return null;
+                    }
+
+                });
             }
 
             changeIotFaucetStatusForLink(link, true);
@@ -202,12 +215,73 @@ function changeIotFaucetStatusForLink(link, value) {
 
     client.on('error', function(err) {
         console.log(err)
-     })
+        client.end();
+     });
+
+     client.on('end', () => {
+        console.log('Connection ended');
+      });
 }
 
-function getRainCondition(lat, lnt) {
-    //TODO: Get rain condition for current day, given lat lng
-    return true;
+async function getRainCondition(lat, lng) {
+    var config = {
+        baseURL: "https://api.openweathermap.org/data/2.5",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json"
+        },
+        params: {
+            lat: lat,
+            lon: lng,
+            lang: "pt_br",
+            exclude: "minutely,hourly",
+            units: "metric",
+            appid: "b9997332ba677618289bc7297e3e719d"
+        }
+      };
+
+      var r = await axios.get('onecall', config);
+      const response = r.data;
+
+      const currentDayForecast = response.daily[0];
+      const tomorrowForecast = response.daily[1];
+
+      const prediction = {
+        "today": {
+          "min": currentDayForecast.temp.min,
+          "max": currentDayForecast.temp.max,
+          "current": response.current.temp,
+          "status": response.current.weather[0].description,
+          "uv": uviLevel(response.current.uvi),
+          "humidity": response.current.humidity,
+          "rain_chance": currentDayForecast.rain
+        },
+        "tomorrow": {
+          "min": tomorrowForecast.temp.min,
+          "max": tomorrowForecast.temp.max,
+          "current": null,
+          "status": null,
+          "uv": null,
+          "humidity": null,
+          "rain_chance": tomorrowForecast.rain
+        }
+      };
+      
+    return prediction;
+}
+
+async function willRainIn(lat, lng) {
+    const forecast = await getRainCondition(lat, lng);
+
+    const rainPrec = forecast.today.rain_chance;
+
+    if (rainPrec == null) {
+        return false;
+    }
+
+    const rainPerHour = rainPrec / 24;
+      
+    return rainPerHour > 0.1;
 }
 
 function getReadStatus(value) {
@@ -220,6 +294,27 @@ function getReadStatus(value) {
     }
 
     return 'high';
+}
+
+function uviLevel(value) {
+    if (value < 2) {
+        return 'Baixo';
+    }
+
+    if (value < 5) {
+        return 'Moderado';
+    }
+
+    if (value < 7) {
+        return 'Alto';
+    }
+
+    if (value < 10) {
+        return 'Muito Alto';
+    }
+
+    return 'Extremo';
+    
 }
 
 function sleep(ms) {
