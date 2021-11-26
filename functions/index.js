@@ -201,7 +201,7 @@ async function changeIotFaucetStatusForUser(userId, value) {
  * @param {*} value
  */
 function changeIotFaucetStatusForLink(link, value) {
-  const ip = link.split(":")[0];
+  const ip = "tcp://" + link.split(":")[0];
   const port = link.split(":")[1];
 
   const client = new net.Socket();
