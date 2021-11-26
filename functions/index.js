@@ -43,7 +43,7 @@ exports.addLog = functions.https.onRequest(async (req, res) => {
         auxIot = obj;
       }
     }
-    lastSoilUpdate[serial] = {
+    lastSoilUpdate[auxIot.name] = {
       value: value,
       status: getReadStatus(value),
     };
@@ -205,12 +205,15 @@ function changeIotFaucetStatusForLink(link, value) {
   const port = link.split(":")[1];
 
   const client = new net.Socket();
+  console.log("connecting to ", link);
   client.connect(port, ip, async function() {
+    console.log("connected to ", link);
     let msg = "FAUCET_STATUS OFF";
     if (value) {
       msg = "FAUCET_STATUS ON";
     }
     await sleep(1000);
+    console.log("sending ", msg, " to client");
     client.write(msg);
     client.end();
   });
