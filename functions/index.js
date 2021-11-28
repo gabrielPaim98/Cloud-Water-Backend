@@ -1,6 +1,5 @@
 const functions = require("firebase-functions");
 const admin = require("firebase-admin");
-const net = require("net");
 const axios = require("axios");
 admin.initializeApp();
 
@@ -150,6 +149,7 @@ exports.onMainIotChange = functions.firestore.document("main_iot/{documentId}")
         }
       }
       if (!isAnyStatusLow) {
+        changeIotFaucetStatusForLink(link, false);
         return null;
       }
 
@@ -196,45 +196,42 @@ async function changeIotFaucetStatusForUser(userId, value) {
 }
 
 /**
- * Changes the faucet status for given tcp link
+ * Changes the faucet status for given https link
  * @param {*} link
  * @param {*} value
  */
-function changeIotFaucetStatusForLink(link, value) {
-  const ip = "tcp://" + link.split(":")[0];
-  const port = link.split(":")[1];
+async function changeIotFaucetStatusForLink(link, value) {
+  const reqUrl = link + "/faucet";
 
-  const client = new net.Socket();
-  console.log("connecting to ", link);
-  client.connect(port, ip, async function() {
-    console.log("connected to ", link);
-    let msg = "FAUCET_STATUS OFF";
-    if (value) {
-      msg = "FAUCET_STATUS ON";
-    }
-    await sleep(1000);
-    console.log("sending ", msg, " to client");
-    client.write(msg);
-    client.end();
-  });
+  let sts;
+  if (value) {
+    sts = "on";
+  } else {
+    sts = "off";
+  }
 
-  client.on("data", function(data) {
-    console.log("Received: " + data);
-    // client.destroy(); // kill client after server's response
-  });
+  console.log("updating faucet to ", sts, " for link ", reqUrl);
 
-  client.on("close", function() {
-    console.log("Connection closed");
-  });
+  // const config = {
+  // headers: {
+  // "Content-Type": "application/json",
+  // },
+  // params: {
+  // status: sts,
+  // },
+  // };
 
-  client.on("error", function(err) {
-    console.log(err);
-    client.end();
-  });
+  const config = {
+    status: sts,
+  };
 
-  client.on("end", () => {
-    console.log("Connection ended");
-  });
+  axios.post(reqUrl, config).then(function(response) {
+    console.log("faucet link ", link, "updated with ",
+        response.status, response.data);
+  })
+      .catch(function(error) {
+        console.log("faucet link ", link, "got error ", error);
+      });
 }
 
 /**
@@ -354,13 +351,3 @@ function uviLevel(value) {
   return "Extremo";
 }
 
-/**
- * Stops the thread for given time
- * @param {*} ms
- * @return {*}
- */
-function sleep(ms) {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
